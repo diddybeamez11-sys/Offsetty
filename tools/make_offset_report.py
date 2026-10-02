@@ -53,8 +53,15 @@ def main():
         library,
     ])
 
-    with open(output, "w", encoding="utf-8") as f:
-        f.write("Minecraft Bedrock ARM64 Offset Report\n")
+    with open(
+        output,
+        "w",
+        encoding="utf-8",
+    ) as f:
+
+        f.write(
+            "Minecraft Bedrock ARM64 Offset Report\n"
+        )
         f.write("=" * 60)
         f.write("\n\n")
 
@@ -62,7 +69,9 @@ def main():
         f.write("-" * 60)
         f.write(f"{library}\n\n")
 
-        f.write("INTERESTING EXPORTED SYMBOLS\n")
+        f.write(
+            "INTERESTING EXPORTED SYMBOLS\n"
+        )
         f.write("-" * 60)
         f.write("\n")
 
@@ -74,7 +83,9 @@ def main():
                 count += 1
 
         f.write("\n")
-        f.write(f"Matching exported symbols: {count}\n\n")
+        f.write(
+            f"Matching exported symbols: {count}\n\n"
+        )
 
         f.write("INTERESTING STRINGS\n")
         f.write("-" * 60)
@@ -88,7 +99,9 @@ def main():
                 string_count += 1
 
         f.write("\n")
-        f.write(f"Matching strings: {string_count}\n")
+        f.write(
+            f"Matching strings: {string_count}\n"
+        )
 
 
 if __name__ == "__main__":

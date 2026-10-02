@@ -6,7 +6,7 @@ on:
       release_tag:
         description: "GitHub Release tag containing the Minecraft APK"
         required: true
-        default: "latest"
+        default: "mc-base"
         type: string
 
 permissions:
@@ -39,31 +39,32 @@ jobs:
         run: |
           mkdir -p input
 
-          if [ "$RELEASE_TAG" = "latest" ]; then
-            echo "Finding latest GitHub release..."
-            gh release download \
-              --repo "${{ github.repository }}" \
-              --pattern "*.apk" \
-              --dir input
-          else
-            echo "Downloading APK from release: $RELEASE_TAG"
-            gh release download "$RELEASE_TAG" \
-              --repo "${{ github.repository }}" \
-              --pattern "*.apk" \
-              --dir input
-          fi
+          echo "========================================"
+          echo "Downloading Minecraft APK"
+          echo "Release: $RELEASE_TAG"
+          echo "Asset: Minecraft-1.21.111-arm64-v8a.apk"
+          echo "========================================"
 
-          echo "Downloaded files:"
-          ls -lh input
+          gh release download "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "Minecraft-1.21.111-arm64-v8a.apk" \
+            --dir input
 
-          APK="$(find input -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          APK="input/Minecraft-1.21.111-arm64-v8a.apk"
 
-          if [ -z "$APK" ]; then
-            echo "::error::No APK was found in the release."
+          if [ ! -f "$APK" ]; then
+            echo "::error::Minecraft-1.21.111-arm64-v8a.apk was not found in release '$RELEASE_TAG'."
+            echo
+            echo "Files found in input:"
+            ls -lah input || true
             exit 1
           fi
 
-          echo "APK=$APK" >> "$GITHUB_ENV"
+          echo
+          echo "Minecraft APK found:"
+          ls -lh "$APK"
+
+          echo "APK=$PWD/$APK" >> "$GITHUB_ENV"
 
       - name: Verify APK
         run: |
@@ -71,13 +72,23 @@ jobs:
           file "$APK"
 
           echo
-          echo "SHA-256:"
+          echo "APK SHA-256:"
           sha256sum "$APK"
+
+      - name: Inspect APK contents
+        run: |
+          echo "Searching for libminecraftpe.so..."
+
+          unzip -l "$APK" | grep -E \
+            'lib/arm64-v8a/libminecraftpe\.so$' \
+            || true
 
       - name: Extract ARM64 libminecraftpe.so
         run: |
           rm -rf extracted
           mkdir -p extracted
+
+          echo "Extracting ARM64 libminecraftpe.so..."
 
           unzip -q "$APK" \
             "lib/arm64-v8a/libminecraftpe.so" \
@@ -86,7 +97,10 @@ jobs:
           LIB="extracted/lib/arm64-v8a/libminecraftpe.so"
 
           if [ ! -f "$LIB" ]; then
-            echo "::error::ARM64 libminecraftpe.so was not found."
+            echo "::error::ARM64 libminecraftpe.so was not found inside the APK."
+            echo
+            echo "Searching APK for libminecraftpe.so:"
+            unzip -l "$APK" | grep "libminecraftpe.so" || true
             exit 1
           fi
 
@@ -94,24 +108,41 @@ jobs:
 
           echo "LIB=$PWD/libminecraftpe.so" >> "$GITHUB_ENV"
 
+          echo
+          echo "Extracted library:"
           ls -lh "$LIB"
+
+          echo
+          echo "Library type:"
           file "$LIB"
 
       - name: Calculate library hash
         run: |
+          echo "SHA-256 of libminecraftpe.so:"
           sha256sum "$LIB" | tee libminecraftpe.sha256
 
       - name: Read ELF information
         run: |
           mkdir -p report
 
+          echo "Reading ELF information..."
+
           file "$LIB" > report/file.txt
 
-          readelf -h "$LIB" > report/elf-header.txt
-          readelf -l "$LIB" > report/program-headers.txt
-          readelf -S "$LIB" > report/sections.txt
-          readelf -d "$LIB" > report/dynamic.txt
-          readelf -n "$LIB" > report/notes.txt
+          readelf -h "$LIB" \
+            > report/elf-header.txt
+
+          readelf -l "$LIB" \
+            > report/program-headers.txt
+
+          readelf -S "$LIB" \
+            > report/sections.txt
+
+          readelf -d "$LIB" \
+            > report/dynamic.txt
+
+          readelf -n "$LIB" \
+            > report/notes.txt
 
       - name: Extract exported symbols
         run: |
@@ -123,32 +154,88 @@ jobs:
           readelf --dyn-syms --wide "$LIB" \
             > report/dynamic-symbols-readelf.txt 2>&1 || true
 
+          echo
+          echo "Dynamic symbol count:"
+          wc -l report/dynamic-symbols.txt || true
+
       - name: Extract strings
         run: |
+          echo "Extracting strings..."
+
           strings -a -n 4 "$LIB" \
             > report/strings.txt
 
+          echo "String count:"
+          wc -l report/strings.txt
+
       - name: Extract useful Minecraft strings
         run: |
+          echo "Searching for useful Minecraft strings..."
+
           grep -Ei \
             'Actor|Player|Mob|LocalPlayer|GameMode|Level|BlockSource|MinecraftClient|MinecraftGame|Move|Jump|Attack|Inventory|Item|Block' \
             report/strings.txt \
-            > report/minecraft-strings.txt || true
+            > report/minecraft-strings.txt \
+            || true
+
+          echo
+          echo "Matching Minecraft strings:"
+          wc -l report/minecraft-strings.txt || true
 
       - name: Generate basic offset database
         run: |
+          if [ ! -f tools/extract_offsets.py ]; then
+            echo "::error::tools/extract_offsets.py does not exist."
+            exit 1
+          fi
+
+          echo "Generating offset database..."
+
           python3 tools/extract_offsets.py \
             "$LIB" \
             report/offsets.json
 
       - name: Build human-readable summary
         run: |
+          if [ ! -f tools/make_offset_report.py ]; then
+            echo "::error::tools/make_offset_report.py does not exist."
+            exit 1
+          fi
+
+          echo "Generating human-readable offset report..."
+
           python3 tools/make_offset_report.py \
             "$LIB" \
             report/offsets.txt
 
+      - name: Display analysis summary
+        run: |
+          echo
+          echo "========================================"
+          echo " Minecraft Offset Analysis Complete"
+          echo "========================================"
+          echo
+          echo "Release:"
+          echo "$RELEASE_TAG"
+          echo
+          echo "APK:"
+          echo "$APK"
+          echo
+          echo "Library:"
+          echo "$LIB"
+          echo
+          echo "Files generated:"
+          find report -maxdepth 1 -type f -printf '%f\n' | sort
+          echo
+          echo "Offset database:"
+          ls -lh report/offsets.json
+          echo
+          echo "Offset report:"
+          ls -lh report/offsets.txt
+
       - name: Package results
         run: |
+          rm -rf offsets
           mkdir -p offsets
 
           cp -r report offsets/
@@ -156,7 +243,14 @@ jobs:
           cp libminecraftpe.sha256 offsets/
 
           cd offsets
+
           zip -r ../minecraft-offsets.zip .
+
+          cd ..
+
+          echo
+          echo "Created:"
+          ls -lh minecraft-offsets.zip
 
       - name: Upload offset artifact
         uses: actions/upload-artifact@v4
@@ -167,193 +261,12 @@ jobs:
             report/offsets.json
             report/offsets.txt
             report/dynamic-symbols.txt
+            report/dynamic-symbols-readelf.txt
             report/sections.txt
+            report/elf-header.txt
+            report/program-headers.txt
+            report/dynamic.txt
+            report/notes.txt
+            report/minecraft-strings.txt
             libminecraftpe.sha256
           if-no-files-found: error
-:::
-
-Then create:
-
-`tools/extract_offsets.py`
-
-:::writing{variant="document" id="74106" title="extract_offsets.py"}
-```python
-#!/usr/bin/env python3
-
-import json
-import os
-import re
-import struct
-import subprocess
-import sys
-
-
-def run(command):
-    try:
-        result = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-        )
-        return result.stdout
-    except Exception:
-        return ""
-
-
-def parse_dynamic_symbols(path):
-    output = run([
-        "nm",
-        "-D",
-        "--defined-only",
-        path,
-    ])
-
-    symbols = []
-
-    for line in output.splitlines():
-        line = line.strip()
-
-        if not line:
-            continue
-
-        parts = line.split(None, 2)
-
-        if len(parts) != 3:
-            continue
-
-        address, symbol_type, name = parts
-
-        if not re.fullmatch(r"[0-9a-fA-F]+", address):
-            continue
-
-        symbols.append({
-            "address": "0x" + address,
-            "type": symbol_type,
-            "name": name,
-            "offset": int(address, 16),
-        })
-
-    return symbols
-
-
-def parse_elf_header(path):
-    output = run([
-        "readelf",
-        "-h",
-        path,
-    ])
-
-    result = {}
-
-    for line in output.splitlines():
-        if ":" not in line:
-            continue
-
-        key, value = line.split(":", 1)
-
-        key = key.strip()
-        value = value.strip()
-
-        if key in {
-            "Class",
-            "Data",
-            "Type",
-            "Machine",
-            "Entry point address",
-            "Start of program headers",
-            "Start of section headers",
-            "Number of program headers",
-            "Number of section headers",
-        }:
-            result[key] = value
-
-    return result
-
-
-def parse_build_id(path):
-    output = run([
-        "readelf",
-        "-n",
-        path,
-    ])
-
-    match = re.search(
-        r"Build ID:\s*([0-9a-fA-F]+)",
-        output,
-    )
-
-    if match:
-        return match.group(1)
-
-    return None
-
-
-def get_file_size(path):
-    return os.path.getsize(path)
-
-
-def main():
-    if len(sys.argv) != 3:
-        print(
-            "Usage: extract_offsets.py "
-            "<libminecraftpe.so> <output.json>"
-        )
-        sys.exit(1)
-
-    library = os.path.abspath(sys.argv[1])
-    output_file = os.path.abspath(sys.argv[2])
-
-    if not os.path.isfile(library):
-        print("Library does not exist:", library)
-        sys.exit(1)
-
-    elf = parse_elf_header(library)
-    symbols = parse_dynamic_symbols(library)
-    build_id = parse_build_id(library)
-
-    for symbol in symbols:
-        symbol["hex_offset"] = hex(symbol["offset"])
-
-        # These are useful for converting the symbol address
-        # into a conventional client-side offset.
-        symbol["decimal_offset"] = symbol["offset"]
-
-    result = {
-        "library": os.path.basename(library),
-        "size": get_file_size(library),
-        "build_id": build_id,
-        "elf": elf,
-        "dynamic_symbol_count": len(symbols),
-        "dynamic_symbols": symbols,
-    }
-
-    os.makedirs(
-        os.path.dirname(output_file),
-        exist_ok=True,
-    )
-
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(
-            result,
-            f,
-            indent=2,
-            ensure_ascii=False,
-        )
-
-    print()
-    print("========================================")
-    print(" Minecraft Offset Extraction")
-    print("========================================")
-    print()
-    print("Library:", library)
-    print("Size:", get_file_size(library), "bytes")
-    print("Build ID:", build_id or "not found")
-    print("Dynamic symbols:", len(symbols))
-    print()
-    print("Output:", output_file)
-
-
-if __name__ == "__main__":
-    main()
